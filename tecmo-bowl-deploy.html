@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Tecmo Bowl Mobile</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🏈</text></svg>">
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    html, body, #root { width: 100%; min-height: 100vh; overflow-x: hidden; background: #0a0a20; touch-action: manipulation; }
+    button { -webkit-tap-highlight-color: transparent; touch-action: manipulation; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+const TEAMS = [
+  { name: 'SAN FRAN', abbr: 'SF', color: '#c82010', secondary: '#ffd700', rating: 92 },
+  { name: 'NEW YORK', abbr: 'NY', color: '#2040a0', secondary: '#fff', rating: 88 },
+  { name: 'CHICAGO', abbr: 'CHI', color: '#0b162a', secondary: '#c83803', rating: 85 },
+  { name: 'DALLAS', abbr: 'DAL', color: '#041e42', secondary: '#869397', rating: 90 },
+  { name: 'MIAMI', abbr: 'MIA', color: '#008e97', secondary: '#fc4c02', rating: 86 },
+  { name: 'LA', abbr: 'LA', color: '#003594', secondary: '#ffa300', rating: 89 },
+  { name: 'KANSAS CITY', abbr: 'KC', color: '#e31837', secondary: '#ffb612', rating: 94 },
+  { name: 'BUFFALO', abbr: 'BUF', color: '#00338d', secondary: '#c60c30', rating: 91 },
+];
+const OFF_PLAYS = [
+  { id: 'dive', name: 'DIVE', type: 'run', icon: '↑' },
+  { id: 'sweep', name: 'SWEEP', type: 'run', icon: '←' },
+  { id: 'short', name: 'SHORT', type: 'pass', icon: '↗' },
+  { id: 'bomb', name: 'BOMB', type: 'pass', icon: '⬆' },
+  { id: 'screen', name: 'SCREEN', type: 'pass', icon: '↖' },
+  { id: 'pa', name: 'PA DEEP', type: 'pass', icon: '⇗' },
+];
+const DEF_PLAYS = [
+  { id: 'c2', name: 'COVER 2', icon: '②', type: 'zone' },
+  { id: 'c3', name: 'COVER 3', icon: '③', type: 'zone' },
+  { id: 'blitz', name: 'BLITZ', icon: '⚡', type: 'blitz' },
+  { id: 'zb', name: 'Z-BLITZ', icon: '⚔', type: 'blitz' },
+  { id: 'prev', name: 'PREVENT', icon: '▽', type: 'zone' },
+  { id: 'goal', name: 'GOAL', icon: '🧱', type: 'blitz' },
+];
+
+const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) || d; } catch { return d; } };
+const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+
+class Sound {
+  constructor() { this.ctx = null; this.on = true; }
+  init() { if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)(); return this.ctx; }
+  tone(f, d, t = 'square', v = 0.3) {
+    if (!this.on) return;
+    try { const c = this.init(); const o = c.createOscillator(), g = c.createGain(); o.type = t; o.frequency.setValueAtTime(f, c.currentTime); g.gain.setValueAtTime(v * 0.3, c.currentTime); g.gain.exponentialRampToValueAtTime(0.01, c.currentTime + d); o.connect(g); g.connect(c.destination); o.start(); o.stop(c.currentTime + d); } catch {}
+  }
+  noise(d) { try { const c = this.init(); const sz = c.sampleRate * d, buf = c.createBuffer(1, sz, c.sampleRate), dt = buf.getChannelData(0); for (let i = 0; i < sz; i++) dt[i] = Math.random() * 2 - 1; const n = c.createBufferSource(), g = c.createGain(); n.buffer = buf; g.gain.setValueAtTime(0.1, c.currentTime); g.gain.exponentialRampToValueAtTime(0.01, c.currentTime + d); n.connect(g); g.connect(c.destination); n.start(); } catch {} }
+  select() { this.tone(880, 0.1); }
+  snap() { this.tone(150, 0.1); this.noise(0.05); }
+  tackle() { this.noise(0.15); this.tone(100, 0.2); }
+  pass() { for (let i = 0; i < 5; i++) setTimeout(() => this.tone(600 + i * 50, 0.05, 'sine', 0.2), i * 30); }
+  catch_ball() { this.tone(523, 0.1); setTimeout(() => this.tone(659, 0.1), 80); }
+  incomplete() { this.tone(200, 0.3); setTimeout(() => this.tone(150, 0.3), 200); }
+  firstDown() { [523, 659, 784].forEach((f, i) => setTimeout(() => this.tone(f, 0.15), i * 120)); }
+  td() { [523, 523, 523, 523, 415, 466, 523].forEach((f, i) => setTimeout(() => this.tone(f, 0.2), i * 150)); }
+}
+const snd = new Sound();
+
+const useResp = () => {
+  const [sz, setSz] = useState({ w: window.innerWidth, h: window.innerHeight });
+  useEffect(() => { const h = () => setSz({ w: window.innerWidth, h: window.innerHeight }); window.addEventListener('resize', h); return () => window.removeEventListener('resize', h); }, []);
+  const mob = sz.w < 768;
+  const fw = mob ? Math.min(sz.w - 20, 380) : Math.min(sz.w - 40, 700);
+  return { mob, fw, fh: fw / 2, sc: fw / 800 };
+};
+
+const Joystick = ({ onMove, onPass, isOff }) => {
+  const [pos, setPos] = useState({ x: 0, y: 0 });
+  const [active, setActive] = useState(false);
+  const center = useRef({ x: 0, y: 0 });
+  const outer = useRef(null);
+  const start = (e) => { e.preventDefault(); const r = outer.current.getBoundingClientRect(); center.current = { x: r.left + r.width / 2, y: r.top + r.height / 2 }; setActive(true); };
+  const move = useCallback((e) => {
+    if (!active) return;
+    const t = e.touches ? e.touches[0] : e;
+    const dx = t.clientX - center.current.x, dy = t.clientY - center.current.y;
+    const dist = Math.min(Math.sqrt(dx * dx + dy * dy), 40);
+    const ang = Math.atan2(dy, dx);
+    setPos({ x: Math.cos(ang) * dist, y: Math.sin(ang) * dist });
+    onMove(Math.cos(ang) * dist / 40, Math.sin(ang) * dist / 40);
+  }, [active, onMove]);
+  const end = useCallback(() => { setActive(false); setPos({ x: 0, y: 0 }); onMove(0, 0); }, [onMove]);
+  useEffect(() => {
+    if (active) {
+      const mv = (e) => { e.preventDefault(); move(e); };
+      window.addEventListener('touchmove', mv, { passive: false });
+      window.addEventListener('touchend', end);
+      window.addEventListener('mousemove', move);
+      window.addEventListener('mouseup', end);
+      return () => { window.removeEventListener('touchmove', mv); window.removeEventListener('touchend', end); window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', end); };
+    }
+  }, [active, move, end]);
+  return (
+    <div style={{ position: 'fixed', bottom: 20, left: 0, right: 0, display: 'flex', justifyContent: 'space-between', padding: '0 20px', pointerEvents: 'none', zIndex: 100 }}>
+      <div ref={outer} onTouchStart={start} onMouseDown={start} style={{ width: 100, height: 100, borderRadius: '50%', background: 'rgba(255,255,255,0.15)', border: '3px solid rgba(255,255,255,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'auto', touchAction: 'none' }}>
+        <div style={{ width: 40, height: 40, borderRadius: '50%', background: active ? 'rgba(255,215,0,0.8)' : 'rgba(255,255,255,0.5)', border: '2px solid #fff', transform: `translate(${pos.x}px, ${pos.y}px)`, transition: active ? 'none' : 'transform 0.2s' }} />
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', pointerEvents: 'auto' }}>
+        <button onTouchStart={(e) => { e.preventDefault(); if (isOff) onPass(); }} onMouseDown={() => { if (isOff) onPass(); }}
+          style={{ width: 70, height: 70, borderRadius: '50%', background: isOff ? 'rgba(255,215,0,0.4)' : 'rgba(100,100,100,0.3)', border: isOff ? '3px solid #ffd700' : '2px solid #666', color: '#fff', fontSize: 11, fontFamily: '"Press Start 2P"', touchAction: 'none' }}>
+          {isOff ? 'PASS' : '🛡️'}
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const Player = ({ x, y, color, isQB, hasBall, dir, num, ctrl, team, run, sc = 1 }) => {
+  const [fr, setFr] = useState(0);
+  useEffect(() => { if (run) { const a = setInterval(() => setFr(f => (f + 1) % 4), 100); return () => clearInterval(a); } }, [run]);
+  const off = [{ l: 0, r: 0 }, { l: -3, r: 3 }, { l: 0, r: 0 }, { l: 3, r: -3 }][fr];
+  return (
+    <g transform={`translate(${x * sc}, ${y * sc}) scale(${sc})`}>
+      <ellipse cx={0} cy={12} rx={8} ry={4} fill="rgba(0,0,0,0.4)" />
+      {ctrl && <><circle r={16} fill="none" stroke={team === 'offense' ? '#0f0' : '#f00'} strokeWidth={2} strokeDasharray="4,4"><animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="1s" repeatCount="indefinite" /></circle><polygon points="0,-22 -5,-28 5,-28" fill={team === 'offense' ? '#0f0' : '#f00'}><animateTransform attributeName="transform" type="translate" values="0,0;0,-2;0,0" dur="0.5s" repeatCount="indefinite" /></polygon></>}
+      <rect x={-4 + off.l} y={4} width={3} height={8} fill={color} stroke="#000" strokeWidth={0.5} />
+      <rect x={1 + off.r} y={4} width={3} height={8} fill={color} stroke="#000" strokeWidth={0.5} />
+      <rect x={-6} y={-4} width={12} height={9} fill={color} stroke="#000" rx={2} />
+      <ellipse cx={0} cy={-7} rx={5} ry={4} fill={color} stroke="#000" />
+      <text x={0} y={2} fontSize="5" fill="#fff" textAnchor="middle" style={{ fontFamily: 'monospace' }}>{num}</text>
+      {hasBall && <ellipse cx={dir === 'left' ? -10 : 10} cy={-2} rx={4} ry={2.5} fill="#8b4513" stroke="#5a2d0a" />}
+      {isQB && <text x={0} y={-16} fontSize="8" fill="#ffd700" textAnchor="middle">★</text>}
+    </g>
+  );
+};
+
+const Field = ({ children, scr, snap, w, h, sc }) => (
+  <svg width={w} height={h} style={{ border: `${2 * sc}px solid #000`, borderRadius: 4, touchAction: 'none' }}>
+    <defs><filter id="glow"><feGaussianBlur stdDeviation="2" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter></defs>
+    <rect width={w} height={h} fill="#2d5a27" />
+    <rect width={w * 0.1} height={h} fill="#8b1a1a" fillOpacity={0.8} />
+    <rect x={w * 0.9} width={w * 0.1} height={h} fill="#1a3d8b" fillOpacity={0.8} />
+    {[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map(i => <line key={i} x1={(i / 100) * w} y1={0} x2={(i / 100) * w} y2={h} stroke="#e8e8c8" strokeWidth={sc} strokeOpacity={0.5} />)}
+    <line x1={(scr / 100) * w} y1={0} x2={(scr / 100) * w} y2={h} stroke="#ffd700" strokeWidth={3 * sc} strokeDasharray={`${6 * sc},${3 * sc}`} filter="url(#glow)" />
+    {snap && <circle cx={(scr / 100) * w} cy={h / 2} fill="none" stroke="#fff" strokeWidth={2 * sc}><animate attributeName="r" from={5 * sc} to={40 * sc} dur="0.3s" /><animate attributeName="opacity" from="1" to="0" dur="0.3s" /></circle>}
+    {children}
+  </svg>
+);
+
+const Score = ({ ht, at, hs, as, q, d, ytg, ball, poss, mob }) => (
+  <div style={{ background: '#1a1a2e', border: '2px solid #333', borderRadius: 6, padding: mob ? '6px 10px' : '8px 14px', display: 'flex', gap: mob ? 8 : 15, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'center', fontFamily: '"Press Start 2P"' }}>
+    <div style={{ display: 'flex', gap: mob ? 6 : 12, alignItems: 'center' }}>
+      <div style={{ textAlign: 'center' }}><div style={{ color: ht?.color || '#fff', fontSize: mob ? 7 : 9 }}>{poss === 'home' && '▶'}{ht?.abbr || 'HOME'}</div><div style={{ color: '#ff6b6b', fontSize: mob ? 16 : 20 }}>{hs}</div></div>
+      <div style={{ color: '#555', fontSize: 7 }}>VS</div>
+      <div style={{ textAlign: 'center' }}><div style={{ color: at?.color || '#fff', fontSize: mob ? 7 : 9 }}>{at?.abbr || 'AWAY'}{poss === 'away' && '◀'}</div><div style={{ color: '#6bb5ff', fontSize: mob ? 16 : 20 }}>{as}</div></div>
+    </div>
+    <div style={{ display: 'flex', gap: mob ? 6 : 12 }}>
+      <div style={{ textAlign: 'center' }}><div style={{ color: '#666', fontSize: 5 }}>QTR</div><div style={{ color: '#ffd700', fontSize: mob ? 12 : 16 }}>{q}</div></div>
+      <div style={{ textAlign: 'center' }}><div style={{ color: '#666', fontSize: 5 }}>DOWN</div><div style={{ color: '#fff', fontSize: mob ? 8 : 10 }}>{d}&{ytg}</div></div>
+      <div style={{ textAlign: 'center' }}><div style={{ color: '#666', fontSize: 5 }}>BALL</div><div style={{ color: '#fff', fontSize: mob ? 8 : 10 }}>{ball}</div></div>
+    </div>
+  </div>
+);
+
+const PlaySel = ({ plays, onSel, title, color, isDef, mob }) => (
+  <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', background: '#1a1a2e', border: `3px solid ${color}`, borderRadius: 10, padding: mob ? 10 : 15, zIndex: 100, width: mob ? '90%' : 'auto', maxWidth: 350, fontFamily: '"Press Start 2P"' }}>
+    <h3 style={{ color, textAlign: 'center', margin: '0 0 10px', fontSize: mob ? 9 : 11 }}>{isDef ? '🛡️' : '🏈'} {title}</h3>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 5 }}>
+      {plays.map(p => (
+        <button key={p.id} onClick={() => { snd.select(); onSel(p); }} style={{ background: `${color}30`, border: `2px solid ${color}`, borderRadius: 5, color: '#fff', padding: mob ? '8px 6px' : '10px 12px', fontSize: mob ? 7 : 8, display: 'flex', alignItems: 'center', gap: 5, fontFamily: '"Press Start 2P"', touchAction: 'manipulation' }}>
+          <span style={{ fontSize: mob ? 12 : 14 }}>{p.icon}</span>
+          <div><div>{p.name}</div><div style={{ fontSize: 5, color: '#888', marginTop: 2 }}>{p.type?.toUpperCase()}</div></div>
+        </button>
+      ))}
+    </div>
+  </div>
+);
+
+const TeamSel = ({ teams, onSel, title, dis, onBack, mob }) => (
+  <div style={{ width: '100%', minHeight: '100vh', background: '#0a0a20', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 15, boxSizing: 'border-box', fontFamily: '"Press Start 2P"' }}>
+    <h2 style={{ color: '#ffd700', fontSize: mob ? 11 : 16, marginBottom: 15 }}>{title}</h2>
+    <div style={{ display: 'grid', gridTemplateColumns: mob ? 'repeat(2, 1fr)' : 'repeat(4, 1fr)', gap: mob ? 6 : 10, width: '100%', maxWidth: 500 }}>
+      {teams.map(t => (
+        <button key={t.abbr} onClick={() => dis?.abbr !== t.abbr && (snd.select(), onSel(t))} disabled={dis?.abbr === t.abbr} style={{ background: dis?.abbr === t.abbr ? '#222' : t.color, border: `2px solid ${t.secondary}`, borderRadius: 6, color: dis?.abbr === t.abbr ? '#444' : '#fff', padding: mob ? '10px 6px' : '12px 10px', opacity: dis?.abbr === t.abbr ? 0.4 : 1, fontFamily: '"Press Start 2P"', touchAction: 'manipulation' }}>
+          <div style={{ fontSize: mob ? 14 : 18 }}>{t.abbr}</div>
+          <div style={{ fontSize: 5, color: t.secondary }}>{t.name}</div>
+          <div style={{ color: '#ffd700', fontSize: 7, marginTop: 3 }}>⭐{t.rating}</div>
+        </button>
+      ))}
+    </div>
+    {onBack && <button onClick={onBack} style={{ marginTop: 15, background: '#333', border: '2px solid #555', borderRadius: 5, color: '#888', padding: '8px 20px', fontSize: 8, fontFamily: '"Press Start 2P"' }}>← BACK</button>}
+  </div>
+);
+
+const Msg = ({ text, mob }) => {
+  const [sc, setSc] = useState(0);
+  useEffect(() => { setSc(0); setTimeout(() => setSc(1), 50); if (text.includes('TD')) snd.td(); else if (text.includes('FIRST')) snd.firstDown(); else if (text.includes('CATCH')) snd.catch_ball(); else if (text.includes('INC')) snd.incomplete(); else if (text.includes('TACK')) snd.tackle(); }, [text]);
+  const col = text.includes('TD') ? '#ffd700' : text.includes('FIRST') ? '#0f8' : text.includes('CATCH') ? '#6f6' : '#f66';
+  return (
+    <div style={{ position: 'absolute', top: '50%', left: '50%', transform: `translate(-50%, -50%) scale(${sc})`, transition: 'transform 0.2s', background: 'rgba(0,0,0,0.95)', border: `3px solid ${col}`, borderRadius: 10, padding: mob ? '12px 20px' : '20px 40px', zIndex: 100, fontFamily: '"Press Start 2P"' }}>
+      <div style={{ color: col, fontSize: text.includes('TD') ? (mob ? 16 : 24) : (mob ? 10 : 16), textAlign: 'center' }}>{text}</div>
+      {text.includes('TD') && <div style={{ fontSize: mob ? 20 : 30, textAlign: 'center', marginTop: 8 }}>🏈🎉🏆</div>}
+    </div>
+  );
+};
+
+const Stats = ({ onClose, mob }) => {
+  const st = load('tecmo_stats', { games: 0, wins: 0, tds: 0, yards: 0 });
+  return (
+    <div style={{ width: '100%', minHeight: '100vh', background: '#0a0a20', padding: 20, boxSizing: 'border-box', fontFamily: '"Press Start 2P"' }}>
+      <div style={{ maxWidth: 400, margin: '0 auto' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 }}>
+          <h2 style={{ color: '#ffd700', fontSize: mob ? 11 : 14, margin: 0 }}>📊 STATS</h2>
+          <button onClick={onClose} style={{ background: '#333', border: '2px solid #555', borderRadius: 5, color: '#fff', padding: '6px 10px', fontSize: 7, fontFamily: '"Press Start 2P"' }}>✕</button>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
+          {[{ l: 'GAMES', v: st.games, c: '#6bf' }, { l: 'WINS', v: st.wins, c: '#6f6' }, { l: 'TDs', v: st.tds, c: '#fd0' }, { l: 'YARDS', v: st.yards, c: '#f66' }].map(s => (
+            <div key={s.l} style={{ background: '#1a1a2e', border: `2px solid ${s.c}40`, borderRadius: 6, padding: '10px 6px', textAlign: 'center' }}>
+              <div style={{ color: '#888', fontSize: 6, marginBottom: 4 }}>{s.l}</div>
+              <div style={{ color: s.c, fontSize: mob ? 14 : 18 }}>{s.v}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const Title = ({ onMode, mob }) => {
+  const [ph, setPh] = useState(0);
+  useEffect(() => { setTimeout(() => setPh(1), 500); setTimeout(() => setPh(2), 1500); setTimeout(() => setPh(3), 2500); }, []);
+  return (
+    <div style={{ width: '100%', minHeight: '100vh', background: '#0a0a20', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 20, boxSizing: 'border-box', fontFamily: '"Press Start 2P"' }} onClick={() => ph < 3 && setPh(3)}>
+      <style>{`@keyframes slideL { from { transform: translateX(-100vw); } } @keyframes slideR { from { transform: translateX(100vw); } }`}</style>
+      {ph >= 1 && <h1 style={{ fontSize: mob ? 28 : 44, color: '#ffd700', textShadow: '3px 3px 0 #c82010', margin: 0, animation: 'slideL 0.5s' }}>TECMO</h1>}
+      {ph >= 2 && <h1 style={{ fontSize: mob ? 38 : 58, color: '#fff', textShadow: '3px 3px 0 #2040a0', margin: '-8px 0 0', animation: 'slideR 0.5s' }}>BOWL</h1>}
+      {ph >= 3 && <div style={{ fontSize: 7, color: '#0f8', marginTop: 8 }}>⭐ MOBILE EDITION ⭐</div>}
+      {ph >= 3 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 20, width: '100%', maxWidth: 240 }}>
+          {['🎮 PLAY GAME', '📊 STATS'].map((o, i) => (
+            <button key={i} onClick={() => { snd.select(); onMode(['cpu', 'stats'][i]); }} style={{ background: '#2a2a4a', border: '2px solid #ffd700', borderRadius: 6, color: '#fff', padding: '12px 16px', fontSize: mob ? 10 : 11, fontFamily: '"Press Start 2P"', touchAction: 'manipulation' }}>{o}</button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const Game = ({ onBack }) => {
+  const { mob, fw, fh, sc } = useResp();
+  const [myT, setMyT] = useState(null);
+  const [oppT, setOppT] = useState(null);
+  const [scr, setScr] = useState('sel_home');
+  const [hS, setHS] = useState(0);
+  const [aS, setAS] = useState(0);
+  const [d, setD] = useState(1);
+  const [ytg, setYtg] = useState(10);
+  const [ball, setBall] = useState(20);
+  const [poss, setPoss] = useState('home');
+  const [phase, setPhase] = useState('off');
+  const [selPlay, setSelPlay] = useState(null);
+  const [pls, setPls] = useState([]);
+  const [ballP, setBallP] = useState({ x: 200, y: 200 });
+  const [msg, setMsg] = useState('');
+  const [anim, setAnim] = useState(false);
+  const [ctrl, setCtrl] = useState(null);
+  const [snap, setSnap] = useState(false);
+  const [run, setRun] = useState(new Set());
+  const [tDir, setTDir] = useState({ x: 0, y: 0 });
+  const keys = useRef({});
+  const loop = useRef(null);
+  const FW = 800, FH = 400;
+  const isOff = poss === 'home';
+
+  const initPls = useCallback((oP, dP) => {
+    const oC = poss === 'home' ? myT?.color : oppT?.color, dC = poss === 'home' ? oppT?.color : myT?.color;
+    const sX = (ball / 100) * FW, dir = poss === 'home' ? 'right' : 'left';
+    const blz = dP?.type === 'blitz' ? 1.5 : 1;
+    const off = [
+      { id: 'qb', x: sX - (dir === 'right' ? 40 : -40), y: FH / 2, color: oC, isQB: true, hasBall: true, team: 'offense', num: 12, spd: 3, dir },
+      { id: 'rb', x: sX - (dir === 'right' ? 60 : -60), y: FH / 2 + 30, color: oC, team: 'offense', num: 32, spd: 4, dir },
+      { id: 'wr1', x: sX - (dir === 'right' ? 10 : -10), y: FH / 2 - 90, color: oC, team: 'offense', num: 81, spd: 5, dir },
+      { id: 'wr2', x: sX - (dir === 'right' ? 10 : -10), y: FH / 2 + 90, color: oC, team: 'offense', num: 84, spd: 5, dir },
+      { id: 'te', x: sX - (dir === 'right' ? 10 : -10), y: FH / 2 - 35, color: oC, team: 'offense', num: 88, spd: 3.5, dir },
+    ];
+    const def = [
+      ...[0, 1, 2, 3].map(i => ({ id: `dl${i}`, x: sX + (dir === 'right' ? 15 : -15), y: FH / 2 - 25 + i * 18, color: dC, team: 'defense', num: 90 + i, spd: 2.5 * blz, dir: dir === 'right' ? 'left' : 'right' })),
+      ...[0, 1, 2].map(i => ({ id: `lb${i}`, x: sX + (dir === 'right' ? 45 : -45), y: FH / 2 - 35 + i * 35, color: dC, team: 'defense', num: 50 + i, spd: 3 * blz, dir: dir === 'right' ? 'left' : 'right' })),
+      ...[0, 1, 2, 3].map(i => ({ id: `db${i}`, x: sX + (dir === 'right' ? 90 : -90), y: FH / 2 - 70 + i * 45, color: dC, team: 'defense', num: 20 + i, spd: 4.5, dir: dir === 'right' ? 'left' : 'right' })),
+    ];
+    setPls([...off, ...def]);
+    setCtrl(isOff ? 'qb' : 'lb1');
+    setBallP({ x: off[0].x, y: off[0].y });
+    setSnap(true); snd.snap();
+    setTimeout(() => setSnap(false), 300);
+  }, [myT, oppT, poss, ball, isOff]);
+
+  useEffect(() => {
+    const dn = (e) => { keys.current[e.key.toLowerCase()] = true; if (e.key === ' ' && scr === 'play' && !anim && isOff) handlePass(); };
+    const up = (e) => { keys.current[e.key.toLowerCase()] = false; };
+    window.addEventListener('keydown', dn);
+    window.addEventListener('keyup', up);
+    return () => { window.removeEventListener('keydown', dn); window.removeEventListener('keyup', up); };
+  }, [scr, anim, isOff]);
+
+  const handleJoy = useCallback((x, y) => { setTDir({ x, y }); }, []);
+
+  useEffect(() => {
+    if (scr !== 'play' || anim) return;
+    const lp = () => {
+      setPls(prev => {
+        const p = [...prev];
+        const c = p.find(x => x.id === ctrl), b = p.find(x => x.hasBall);
+        const nr = new Set();
+        if (c) {
+          let dx = 0, dy = 0;
+          if (keys.current['w'] || keys.current['arrowup']) dy -= c.spd;
+          if (keys.current['s'] || keys.current['arrowdown']) dy += c.spd;
+          if (keys.current['a'] || keys.current['arrowleft']) dx -= c.spd;
+          if (keys.current['d'] || keys.current['arrowright']) dx += c.spd;
+          dx += tDir.x * c.spd; dy += tDir.y * c.spd;
+          if (dx || dy) nr.add(c.id);
+          c.x = Math.max(20, Math.min(FW - 20, c.x + dx));
+          c.y = Math.max(20, Math.min(FH - 20, c.y + dy));
+          if (c.hasBall) setBallP({ x: c.x, y: c.y });
+        }
+        p.forEach(x => {
+          if (x.id === ctrl) return;
+          if (x.team === 'offense' && !x.hasBall) {
+            const sp = x.spd * 0.4, dr = poss === 'home' ? 1 : -1;
+            if (['wr1', 'wr2'].includes(x.id)) { x.x += sp * dr; x.y += (x.id === 'wr1' ? -0.5 : 0.5) * sp; nr.add(x.id); }
+            else if (x.id === 'te') { x.x += sp * dr * 0.7; nr.add(x.id); }
+            else if (x.id === 'rb') { x.x += sp * dr * 0.3; nr.add(x.id); }
+          }
+          if (x.team === 'defense' && b) {
+            const ddx = b.x - x.x, ddy = b.y - x.y, dt = Math.sqrt(ddx * ddx + ddy * ddy);
+            if (dt > 0) { x.x += (ddx / dt) * x.spd * 0.5; x.y += (ddy / dt) * x.spd * 0.5; nr.add(x.id); }
+          }
+          x.x = Math.max(20, Math.min(FW - 20, x.x));
+          x.y = Math.max(20, Math.min(FH - 20, x.y));
+        });
+        setRun(nr);
+        if (b && isOff) {
+          if (p.find(x => x.team === 'defense' && Math.sqrt((x.x - b.x) ** 2 + (x.y - b.y) ** 2) < 15)) handleTackle(b);
+          const ez = poss === 'home' ? FW * 0.9 : FW * 0.1;
+          if ((poss === 'home' && b.x >= ez) || (poss !== 'home' && b.x <= ez)) handleTD();
+        }
+        return p;
+      });
+    };
+    loop.current = setInterval(lp, 1000 / 30);
+    return () => clearInterval(loop.current);
+  }, [scr, ctrl, anim, isOff, poss, tDir]);
+
+  const handlePass = () => {
+    const qb = pls.find(p => p.id === 'qb');
+    if (!qb?.hasBall) return;
+    snd.pass();
+    const rcv = pls.filter(p => ['wr1', 'wr2', 'te', 'rb'].includes(p.id));
+    let best = null, bestD = Infinity;
+    rcv.forEach(r => { const dt = Math.sqrt((r.x - qb.x) ** 2 + (r.y - qb.y) ** 2); if (dt < bestD && ((poss === 'home' && r.x > qb.x) || (poss !== 'home' && r.x < qb.x))) { bestD = dt; best = r; } });
+    if (best) {
+      setAnim(true);
+      const st = { x: qb.x, y: qb.y }, en = { x: best.x + (poss === 'home' ? 30 : -30), y: best.y };
+      let pr = 0;
+      const iv = setInterval(() => {
+        pr += 0.05;
+        if (pr >= 1) {
+          clearInterval(iv);
+          if (Math.random() < 0.7) { setPls(p => p.map(x => ({ ...x, hasBall: x.id === best.id }))); setCtrl(best.id); setMsg('CATCH!'); setTimeout(() => setMsg(''), 1000); }
+          else { setMsg(Math.random() < 0.15 ? 'INTERCEPTED!' : 'INCOMPLETE!'); setTimeout(() => nextD(0), 1500); }
+          setAnim(false);
+        } else { setBallP({ x: st.x + (en.x - st.x) * pr, y: st.y + (en.y - st.y) * pr - Math.sin(pr * Math.PI) * 50 }); }
+      }, 30);
+    }
+  };
+
+  const handleTackle = (b) => {
+    if (anim) return;
+    setAnim(true);
+    const yds = Math.round(((b.x / FW) * 100) - ball);
+    const act = poss === 'home' ? yds : -yds;
+    setMsg(`TACKLED! ${act >= 0 ? '+' : ''}${act}`);
+    const st = load('tecmo_stats', { yards: 0 });
+    st.yards = (st.yards || 0) + Math.max(0, act);
+    save('tecmo_stats', st);
+    setTimeout(() => { nextD(act); setAnim(false); setMsg(''); }, 1500);
+  };
+
+  const handleTD = () => {
+    if (anim) return;
+    setAnim(true);
+    setMsg('TOUCHDOWN!!!');
+    const st = load('tecmo_stats', { tds: 0 });
+    st.tds = (st.tds || 0) + 1;
+    save('tecmo_stats', st);
+    setTimeout(() => {
+      if (poss === 'home') setHS(s => s + 7);
+      else setAS(s => s + 7);
+      setPoss(p => p === 'home' ? 'away' : 'home');
+      setBall(20); setD(1); setYtg(10);
+      setScr('sel'); setPhase('off');
+      setAnim(false); setMsg('');
+    }, 3500);
+  };
+
+  const nextD = (yds) => {
+    const nB = Math.max(1, Math.min(99, ball + (poss === 'home' ? yds : -yds)));
+    const nY = ytg - yds;
+    if (nY <= 0) { setD(1); setYtg(10); setMsg('FIRST DOWN!'); }
+    else if (d >= 4) { setMsg('TURNOVER!'); setPoss(p => p === 'home' ? 'away' : 'home'); setD(1); setYtg(10); }
+    else { setD(x => x + 1); setYtg(nY); }
+    setBall(nB);
+    setSelPlay(null); setPhase('off');
+    setTimeout(() => { setScr('sel'); setMsg(''); }, 1500);
+  };
+
+  const endGame = () => {
+    const st = load('tecmo_stats', { games: 0, wins: 0 });
+    st.games++; if (hS > aS) st.wins++;
+    save('tecmo_stats', st);
+    onBack();
+  };
+
+  if (scr === 'sel_home') return <TeamSel teams={TEAMS} onSel={(t) => { setMyT(t); setScr('sel_away'); }} title="YOUR TEAM" onBack={onBack} mob={mob} />;
+  if (scr === 'sel_away') return <TeamSel teams={TEAMS} onSel={(t) => { setOppT(t); setScr('sel'); }} title="OPPONENT" dis={myT} onBack={() => setScr('sel_home')} mob={mob} />;
+
+  if (scr === 'sel') {
+    if (phase === 'def') {
+      const cpuP = DEF_PLAYS[Math.floor(Math.random() * DEF_PLAYS.length)];
+      setTimeout(() => { initPls(selPlay, cpuP); setScr('play'); }, 500);
+      return <div style={{ width: '100%', minHeight: '100vh', background: '#0a0a20', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: '"Press Start 2P"' }}><div style={{ color: '#888', fontSize: 9 }}>CPU selecting...</div></div>;
+    }
+    return (
+      <div style={{ width: '100%', minHeight: '100vh', background: '#0a0a20', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 12, boxSizing: 'border-box' }}>
+        <Score ht={myT} at={oppT} hs={hS} as={aS} q={1} d={d} ytg={ytg} ball={ball} poss={poss} mob={mob} />
+        <div style={{ position: 'relative', marginTop: 12 }}>
+          <Field scr={ball} snap={false} w={fw} h={fh} sc={sc} />
+          <PlaySel plays={isOff ? OFF_PLAYS : DEF_PLAYS} onSel={(p) => { setSelPlay(p); setPhase('def'); }} title={isOff ? 'OFFENSE' : 'DEFENSE'} color={myT?.color || '#ffd700'} isDef={!isOff} mob={mob} />
+        </div>
+      </div>
+    );
+  }
+
+  if (scr !== 'play') return null;
+
+  return (
+    <div style={{ width: '100%', minHeight: '100vh', background: '#0a0a20', display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 8, paddingBottom: mob ? 160 : 15, boxSizing: 'border-box' }}>
+      <Score ht={myT} at={oppT} hs={hS} as={aS} q={1} d={d} ytg={ytg} ball={ball} poss={poss} mob={mob} />
+      <div style={{ position: 'relative', marginTop: 8 }}>
+        <Field scr={ball} snap={snap} w={fw} h={fh} sc={sc}>
+          {pls.map(p => <Player key={p.id} x={p.x} y={p.y} color={p.color} isQB={p.isQB} hasBall={p.hasBall} dir={p.dir} num={p.num} ctrl={p.id === ctrl} team={p.team} run={run.has(p.id)} sc={sc} />)}
+          {anim && <ellipse cx={ballP.x * sc} cy={ballP.y * sc} rx={5 * sc} ry={3 * sc} fill="#8b4513" stroke="#5a2d0a"><animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="0.2s" repeatCount="indefinite" /></ellipse>}
+        </Field>
+        {msg && <Msg text={msg} mob={mob} />}
+      </div>
+      {mob && <div style={{ marginTop: 6, background: isOff ? '#2a5a2a' : '#5a2a2a', padding: '5px 12px', borderRadius: 5, fontSize: 7, color: '#fff', fontFamily: '"Press Start 2P"' }}>{isOff ? '🏈 OFFENSE' : '🛡️ DEFENSE'}</div>}
+      {!mob && <div style={{ display: 'flex', gap: 15, marginTop: 8, fontFamily: '"Press Start 2P"' }}><div style={{ color: '#555', fontSize: 6 }}><span style={{ color: '#888' }}>WASD</span> MOVE</div>{isOff && <div style={{ color: '#555', fontSize: 6 }}><span style={{ color: '#888' }}>SPACE</span> PASS</div>}</div>}
+      <button onClick={endGame} style={{ marginTop: 8, background: '#5a2a2a', border: '2px solid #8a4a4a', borderRadius: 5, color: '#fff', padding: '6px 14px', fontSize: 7, fontFamily: '"Press Start 2P"', zIndex: 60 }}>🏁 END GAME</button>
+      {mob && <Joystick onMove={handleJoy} onPass={handlePass} isOff={isOff} />}
+    </div>
+  );
+};
+
+function App() {
+  const [mode, setMode] = useState(null);
+  const { mob } = useResp();
+  if (!mode) return <Title onMode={setMode} mob={mob} />;
+  if (mode === 'cpu') return <Game onBack={() => setMode(null)} />;
+  if (mode === 'stats') return <Stats onClose={() => setMode(null)} mob={mob} />;
+  return null;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
